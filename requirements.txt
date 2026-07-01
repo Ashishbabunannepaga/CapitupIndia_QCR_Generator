@@ -1,1 +1,1 @@
-pip install google-genai streamlit pandas openpyxl python-dotenv pypdf
+google-genai streamlit pandas openpyxl python-dotenv pypdf
