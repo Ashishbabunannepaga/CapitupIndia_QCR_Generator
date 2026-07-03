@@ -24,10 +24,8 @@ st.set_page_config(page_title="CapitUp QCR Engine", page_icon="🛡️", layout=
 # ==========================================
 default_keys = []
 try:
-    # Auto-load from .streamlit/secrets.toml
     if "GEMINI_API_KEYS" in st.secrets:
         secret_data = st.secrets["GEMINI_API_KEYS"]
-        # Handle both TOML lists and comma-separated strings
         if isinstance(secret_data, list):
             default_keys = [str(k).strip() for k in secret_data if str(k).strip()]
         elif isinstance(secret_data, str):
@@ -35,10 +33,8 @@ try:
 except Exception:
     pass
 
-# Sidebar configuration inputs
 st.sidebar.title("CapitUp Systems")
 
-# Convert default keys back to string for the text input if they exist
 default_keys_str = ",".join(default_keys) if default_keys else ""
 
 global_api_keys = st.sidebar.text_input(
@@ -93,8 +89,6 @@ class APIKeyManager:
 # CORE AI PROCESSING & MODEL WATERFALL
 # ==========================================
 def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
-    """Handles API Key Rotation, Model Waterfall, and Rate Limiting for PDFs."""
-    # 🔥 The Model Rotation Waterfall
     model_waterfall = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']
     
     json_config = types.GenerateContentConfig(
@@ -181,7 +175,8 @@ def build_capitup_motor_excel(baseline, quotes):
     ws.row_dimensions[1].height = 28
     
     # Header Row 2: Light Green Banner
-    make = baseline.get("make", "VEHICLE").upper()
+    # 🔥 NULL PROOF FIX applied here
+    make = str(baseline.get("make") or "VEHICLE").upper()
     ws.merge_cells(f"A2:{last_col_letter}2")
     ws["A2"] = f"COMPARISON - {make}"
     style_range(f"A2:{last_col_letter}2",
@@ -190,7 +185,6 @@ def build_capitup_motor_excel(baseline, quotes):
                 alignment=Alignment(horizontal="center", vertical="center"))
     ws.row_dimensions[2].height = 22
 
-    # Metadata rows
     metadata = [
         ("Name of the Insured", baseline.get("insured_name", "N/A")),
         ("Address", baseline.get("address", "N/A")),
@@ -223,20 +217,23 @@ def build_capitup_motor_excel(baseline, quotes):
     ws.cell(row=current_row, column=1, value="Insurers").font = Font(name=font_family, size=11, bold=True)
     ws.cell(row=current_row, column=1).border = cell_border
     
-    existing_insurer = f"EXISTING ({baseline.get('insurer_name', 'TATA')})"
+    # 🔥 NULL PROOF FIX applied here
+    base_insurer = str(baseline.get('insurer_name') or 'TATA')
+    existing_insurer = f"EXISTING ({base_insurer})"
     ws.cell(row=current_row, column=2, value=existing_insurer).font = Font(name=font_family, size=11, bold=True)
     ws.cell(row=current_row, column=2).alignment = Alignment(horizontal="center", vertical="center")
     ws.cell(row=current_row, column=2).border = cell_border
     
     for idx, q in enumerate(quotes):
         col_idx = idx + 3
-        ws.cell(row=current_row, column=col_idx, value=q.get("insurer_name", "UNKNOWN").upper()).font = Font(name=font_family, size=11, bold=True)
+        # 🔥 NULL PROOF FIX applied here
+        q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
+        ws.cell(row=current_row, column=col_idx, value=q_insurer).font = Font(name=font_family, size=11, bold=True)
         ws.cell(row=current_row, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row=current_row, column=col_idx).border = cell_border
     ws.row_dimensions[current_row].height = 22
     current_row += 1
 
-    # Commercial values mapping
     commercials = [
         ("IDV", "idv", "#,##,##0"),
         ("NCB in %", "ncb_percent", None),
@@ -272,7 +269,6 @@ def build_capitup_motor_excel(baseline, quotes):
         ws.row_dimensions[current_row].height = 20
         current_row += 1
 
-    # Coverages Header row
     ws.merge_cells(f"A{current_row}:{last_col_letter}{current_row}")
     ws.cell(row=current_row, column=1, value="Coverages:").font = Font(name=font_family, size=11, bold=True)
     style_range(f"A{current_row}:{last_col_letter}{current_row}",
@@ -281,7 +277,6 @@ def build_capitup_motor_excel(baseline, quotes):
     ws.row_dimensions[current_row].height = 20
     current_row += 1
 
-    # Dynamic Discovery of Coverage Keys
     all_coverage_keys = set()
     all_coverage_keys.update(baseline.get("coverages", {}).keys())
     for q in quotes:
@@ -448,10 +443,14 @@ def render_motor_vertical(api_keys):
         
         excel_bytes, dynamic_covers = build_capitup_motor_excel(b, qs)
         
-        # Build UI Dataframe Preview Map
-        preview_cols = {f"EXISTING ({b.get('insurer_name', 'TATA')})": []}
+        # 🔥 NULL PROOF FIX applied here
+        base_insurer = str(b.get('insurer_name') or 'TATA').upper()
+        preview_cols = {f"EXISTING ({base_insurer})": []}
+        
         for q in qs:
-            preview_cols[q.get("insurer_name", "UNKNOWN").upper()] = []
+            # 🔥 NULL PROOF FIX applied here
+            q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
+            preview_cols[q_insurer] = []
             
         row_labels = [
             "Name of the Insured", "Address", "Renewal date", "Registration Number", 
@@ -468,7 +467,9 @@ def render_motor_vertical(api_keys):
         ] + [b.get("coverages", {}).get(key, "No") for key in dynamic_covers])
         
         for q in qs:
-            preview_cols[q.get("insurer_name").upper()].extend([
+            # 🔥 NULL PROOF FIX applied here
+            q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
+            preview_cols[q_insurer].extend([
                 b.get("insured_name"), b.get("address"), b.get("renewal_date"), b.get("registration_number"),
                 b.get("make"), b.get("model"), b.get("seating_capacity"), b.get("cubic_capacity"), b.get("year_of_manufacture"),
                 "---", q.get("idv"), q.get("ncb_percent"), q.get("tp_premium"), q.get("od_premium"), q.get("gst"), q.get("gross_premium"),
@@ -554,7 +555,8 @@ def render_health_vertical(api_keys):
         
         columns_map = {}
         for idx, rec in enumerate(h_records):
-            insurer = rec.get("insurer_name", f"Insurer {idx+1}").upper()
+            # 🔥 NULL PROOF FIX applied here
+            insurer = str(rec.get("insurer_name") or f"Insurer {idx+1}").upper()
             columns_map[insurer] = [
                 rec.get("insured_name"),
                 rec.get("policy_type"),
