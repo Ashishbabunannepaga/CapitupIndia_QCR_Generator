@@ -3,12 +3,13 @@ import tempfile
 import os
 import json
 import io
+import time
 import pandas as pd
 from datetime import datetime
 
 # Import the modern Google GenAI SDK
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 
 # Import styling components for Excel Generation
 from openpyxl import Workbook
@@ -21,52 +22,130 @@ st.set_page_config(page_title="CapitUp QCR Engine", page_icon="🛡️", layout=
 # ==========================================
 # NATIVE STREAMLIT SECRETS CONFIGURATION
 # ==========================================
-default_keys = ""
+default_keys = []
 try:
-    # Safe fallback if .streamlit/secrets.toml does not exist yet
+    # Auto-load from .streamlit/secrets.toml
     if "GEMINI_API_KEYS" in st.secrets:
-        default_keys = st.secrets["GEMINI_API_KEYS"]
+        secret_data = st.secrets["GEMINI_API_KEYS"]
+        # Handle both TOML lists and comma-separated strings
+        if isinstance(secret_data, list):
+            default_keys = [str(k).strip() for k in secret_data if str(k).strip()]
+        elif isinstance(secret_data, str):
+            default_keys = [k.strip() for k in secret_data.split(',') if k.strip()]
 except Exception:
     pass
 
 # Sidebar configuration inputs
 st.sidebar.title("CapitUp Systems")
 
+# Convert default keys back to string for the text input if they exist
+default_keys_str = ",".join(default_keys) if default_keys else ""
+
 global_api_keys = st.sidebar.text_input(
-    "API Keys Configuration",
-    value=default_keys,
+    "API Keys Configuration (Comma-separated)",
+    value=default_keys_str,
     type="password",
     help="Loaded automatically from .streamlit/secrets.toml if configured."
 )
 
-# ==========================================
-# MODERN AI CLIENT & KEY ROTATION (google-genai)
-# ==========================================
-def get_gemini_client(api_keys_str):
-    if not api_keys_str:
-        return None, "Please provide at least one Gemini API key."
-    keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
-    if not keys:
-        return None, "No valid API keys found."
-    
-    if "api_key_index" not in st.session_state:
-        st.session_state.api_key_index = 0
-        
-    current_key = keys[st.session_state.api_key_index % len(keys)]
-    
-    # Initialize the modern Google GenAI Client
-    try:
-        client = genai.Client(api_key=current_key)
-        return client, None
-    except Exception as e:
-        return None, f"Failed to initialize GenAI client: {str(e)}"
+if default_keys:
+    st.sidebar.success(f"✅ Auto-loaded {len(default_keys)} keys from secrets!")
 
-def rotate_key(api_keys_str):
-    if api_keys_str:
-        keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
-        if len(keys) > 1:
-            st.session_state.api_key_index = (st.session_state.api_key_index + 1) % len(keys)
-            st.sidebar.warning(f"Switched key to slot index {st.session_state.api_key_index}")
+# ==========================================
+# ENTERPRISE API KEY MANAGER
+# ==========================================
+class APIKeyManager:
+    def __init__(self, keys_input):
+        if isinstance(keys_input, list):
+            self.keys = [str(k).strip() for k in keys_input if str(k).strip()]
+        elif isinstance(keys_input, str):
+            self.keys = [k.strip() for k in keys_input.split(',') if k.strip()]
+        else:
+            self.keys = []
+            
+        self.current_index = 0
+        self.dead_keys = set() 
+
+    def get_next_key(self):
+        if not self.keys:
+            raise ValueError("No API keys provided.")
+        if len(self.dead_keys) == len(self.keys):
+            raise Exception("All provided API keys are permanently invalid (401/403).")
+        
+        start_index = self.current_index
+        while True:
+            key = self.keys[self.current_index]
+            self.current_index = (self.current_index + 1) % len(self.keys)
+            
+            if key not in self.dead_keys:
+                return key
+                
+            if self.current_index == start_index:
+                raise Exception("All keys are permanently dead.")
+
+    def mark_key_dead(self, key, reason):
+        masked_key = f"{key[:6]}...{key[-4:]}" if len(key) > 10 else "UNKNOWN_KEY"
+        st.sidebar.error(f"💀 Key ({masked_key}) permanently invalid: {reason}.")
+        self.dead_keys.add(key)
+
+
+# ==========================================
+# CORE AI PROCESSING & MODEL WATERFALL
+# ==========================================
+def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
+    """Handles API Key Rotation, Model Waterfall, and Rate Limiting for PDFs."""
+    # 🔥 The Model Rotation Waterfall
+    model_waterfall = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-2.5-pro']
+    
+    json_config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.0
+    )
+
+    for attempt in range(retries):
+        current_model = model_waterfall[attempt % len(model_waterfall)]
+        
+        try:
+            api_key = key_manager.get_next_key()
+            client = genai.Client(api_key=api_key)
+            
+            response = client.models.generate_content(
+                model=current_model,
+                contents=[
+                    types.Part.from_bytes(data=file_bytes, mime_type='application/pdf'),
+                    prompt
+                ], 
+                config=json_config
+            )
+            
+            data = json.loads(response.text.strip())
+            return data
+            
+        except errors.APIError as e:
+            if e.code == 429:
+                masked = f"{api_key[:6]}...{api_key[-4:]}" if len(api_key) > 10 else "KEY"
+                st.warning(f"⏳ Rate Limit on {current_model} (Key {masked}). Cooling down for 15s... (Attempt {attempt + 1}/{retries})")
+                time.sleep(15) 
+            elif e.code in [400, 401, 403]:
+                key_manager.mark_key_dead(api_key, f"Auth Error ({e.code})")
+            elif e.code >= 500:
+                st.warning(f"🔄 Google Server Error ({e.code}) on {current_model}. Swapping to fallback model...")
+                time.sleep(2)
+            else:
+                st.error(f"API Error on {file_name}: {e.message}")
+                time.sleep(5)
+                
+        except json.JSONDecodeError:
+            st.warning(f"🔄 {current_model} failed to format JSON on {file_name}. Swapping to fallback model...")
+            
+        except Exception as e:
+            if "permanently dead" in str(e):
+                raise e 
+            st.error(f"Unexpected error on {file_name}: {str(e)}")
+            time.sleep(2)
+            
+    raise Exception(f"Failed to process {file_name} after {retries} attempts across all models.")
+
 
 # ==========================================
 # EXCEL GENERATOR (Capitup Branded Motor QCR)
@@ -333,53 +412,34 @@ def render_motor_vertical(api_keys):
         new_files = st.file_uploader("2. Current Quotations", type=["pdf"], accept_multiple_files=True)
         
     if prev_file and new_files:
-        client, err = get_gemini_client(api_keys)
-        if err:
-            st.sidebar.warning(err)
+        if not api_keys:
+            st.error("Please configure API keys in the sidebar or `.streamlit/secrets.toml`.")
             return
             
-        if st.button("Generate Motor QCR Report", width="stretch"):
+        if st.button("Generate Motor QCR Report", type="primary", width="stretch"):
             baseline = None
             quotes = []
             
-            with st.spinner("Analyzing Previous Policy details..."):
-                try:
+            try:
+                key_manager = APIKeyManager(api_keys)
+                
+                with st.spinner("Analyzing Previous Policy details..."):
                     prev_bytes = prev_file.read()
-                    response = client.models.generate_content(
-                        model=selected_model,
-                        contents=[
-                            types.Part.from_bytes(data=prev_bytes, mime_type='application/pdf'),
-                            MOTOR_SYSTEM_PROMPT
-                        ],
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
-                    )
-                    baseline = json.loads(response.text.strip())
-                except Exception as e:
-                    rotate_key(api_keys)
-                    st.error(f"Failed parsing previous policy: {e}")
-                    return
+                    baseline = process_pdf_document(prev_bytes, prev_file.name, MOTOR_SYSTEM_PROMPT, key_manager)
 
-            for q_file in new_files:
-                with st.spinner(f"Analyzing quote: {q_file.name}..."):
-                    try:
+                for q_file in new_files:
+                    with st.spinner(f"Analyzing quote: {q_file.name}..."):
                         q_bytes = q_file.read()
-                        response = client.models.generate_content(
-                            model=selected_model,
-                            contents=[
-                                types.Part.from_bytes(data=q_bytes, mime_type='application/pdf'),
-                                MOTOR_SYSTEM_PROMPT
-                            ],
-                            config=types.GenerateContentConfig(response_mime_type="application/json")
-                        )
-                        quotes.append(json.loads(response.text.strip()))
-                    except Exception as e:
-                        rotate_key(api_keys)
-                        st.error(f"Failed parsing quote {q_file.name}: {e}")
-                        
-            if baseline and quotes:
-                st.session_state.motor_baseline = baseline
-                st.session_state.motor_quotes = quotes
-                st.success("Comparison extraction completed successfully.")
+                        quote_data = process_pdf_document(q_bytes, q_file.name, MOTOR_SYSTEM_PROMPT, key_manager)
+                        quotes.append(quote_data)
+                            
+                if baseline and quotes:
+                    st.session_state.motor_baseline = baseline
+                    st.session_state.motor_quotes = quotes
+                    st.success("Comparison extraction completed successfully.")
+                    
+            except Exception as e:
+                st.error(f"Processing halted: {e}")
 
     # Render Preview and Excel Generation
     if "motor_baseline" in st.session_state and "motor_quotes" in st.session_state:
@@ -415,7 +475,6 @@ def render_motor_vertical(api_keys):
                 "---"
             ] + [q.get("coverages", {}).get(key, "No") for key in dynamic_covers])
             
-        # FIX: Enforce string formatting on all preview cells to prevent PyArrow conversion crashes!
         df_preview = pd.DataFrame(preview_cols, index=row_labels).astype(str)
         
         st.markdown("---")
@@ -467,39 +526,32 @@ def render_health_vertical(api_keys):
     uploaded_quotes = st.file_uploader("Upload GMC Quotes (PDF)", type=["pdf"], accept_multiple_files=True)
     
     if uploaded_quotes:
-        client, err = get_gemini_client(api_keys)
-        if err:
-            st.sidebar.warning(err)
+        if not api_keys:
+            st.error("Please configure API keys in the sidebar or `.streamlit/secrets.toml`.")
             return
             
-        if st.button("Generate Health GMC QCR Matrix", width="stretch"):
+        if st.button("Generate Health GMC QCR Matrix", type="primary", width="stretch"):
             health_records = []
             
-            for q_file in uploaded_quotes:
-                with st.spinner(f"Extracting GMC details from {q_file.name}..."):
-                    try:
+            try:
+                key_manager = APIKeyManager(api_keys)
+                
+                for q_file in uploaded_quotes:
+                    with st.spinner(f"Extracting GMC details from {q_file.name}..."):
                         q_bytes = q_file.read()
-                        response = client.models.generate_content(
-                            model=selected_model,
-                            contents=[
-                                types.Part.from_bytes(data=q_bytes, mime_type='application/pdf'),
-                                HEALTH_SYSTEM_PROMPT
-                            ],
-                            config=types.GenerateContentConfig(response_mime_type="application/json")
-                        )
-                        health_records.append(json.loads(response.text.strip()))
-                    except Exception as e:
-                        rotate_key(api_keys)
-                        st.error(f"Failed parsing GMC Quote {q_file.name}: {e}")
+                        record = process_pdf_document(q_bytes, q_file.name, HEALTH_SYSTEM_PROMPT, key_manager)
+                        health_records.append(record)
+                
+                if health_records:
+                    st.session_state.health_records = health_records
+                    st.success("Health GMC analysis complete.")
             
-            if health_records:
-                st.session_state.health_records = health_records
-                st.success("Health GMC analysis complete.")
+            except Exception as e:
+                st.error(f"Processing halted: {e}")
 
     if "health_records" in st.session_state and st.session_state.health_records:
         h_records = st.session_state.health_records
         
-        # Format a clean side-by-side comparative matrix preview
         columns_map = {}
         for idx, rec in enumerate(h_records):
             insurer = rec.get("insurer_name", f"Insurer {idx+1}").upper()
@@ -526,14 +578,12 @@ def render_health_vertical(api_keys):
             "Corporate Buffer", "Co-payment Clauses"
         ]
         
-        # Enforce clean formatting & string cast to completely prevent pyarrow errors
         df_health_preview = pd.DataFrame(columns_map, index=index_labels).astype(str)
         
         st.write("---")
         st.subheader("📋 Health GMC QCR Matrix Preview")
         st.dataframe(df_health_preview, width="stretch")
         
-        # Generate basic Excel sheet bytes dynamically for the health download
         wb = Workbook()
         ws = wb.active
         ws.title = "Health GMC Comparison"
@@ -556,8 +606,5 @@ def render_health_vertical(api_keys):
             width="stretch"
         )
 
-
 if __name__ == "__main__":
-    # Choose Pro model as default for high-precision table rendering & calculations
-    selected_model = "gemini-2.5-flash"
     main()
