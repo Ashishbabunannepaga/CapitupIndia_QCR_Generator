@@ -95,7 +95,7 @@ class APIKeyManager:
 def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
     """Handles API Key Rotation, Model Waterfall, and Rate Limiting for PDFs."""
     # 🔥 The Model Rotation Waterfall
-    model_waterfall = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-2.5-pro']
+    model_waterfall = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']
     
     json_config = types.GenerateContentConfig(
         response_mime_type="application/json",
