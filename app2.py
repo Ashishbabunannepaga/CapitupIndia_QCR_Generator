@@ -89,7 +89,8 @@ class APIKeyManager:
 # CORE AI PROCESSING & MODEL WATERFALL
 # ==========================================
 def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
-    model_waterfall = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']
+    # Standardized with active production model names to avoid 404 errors
+    model_waterfall = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-3.1-pro']
     
     json_config = types.GenerateContentConfig(
         response_mime_type="application/json",
@@ -175,7 +176,6 @@ def build_capitup_motor_excel(baseline, quotes):
     ws.row_dimensions[1].height = 28
     
     # Header Row 2: Light Green Banner
-    # 🔥 NULL PROOF FIX applied here
     make = str(baseline.get("make") or "VEHICLE").upper()
     ws.merge_cells(f"A2:{last_col_letter}2")
     ws["A2"] = f"COMPARISON - {make}"
@@ -217,7 +217,6 @@ def build_capitup_motor_excel(baseline, quotes):
     ws.cell(row=current_row, column=1, value="Insurers").font = Font(name=font_family, size=11, bold=True)
     ws.cell(row=current_row, column=1).border = cell_border
     
-    # 🔥 NULL PROOF FIX applied here
     base_insurer = str(baseline.get('insurer_name') or 'TATA')
     existing_insurer = f"EXISTING ({base_insurer})"
     ws.cell(row=current_row, column=2, value=existing_insurer).font = Font(name=font_family, size=11, bold=True)
@@ -226,7 +225,6 @@ def build_capitup_motor_excel(baseline, quotes):
     
     for idx, q in enumerate(quotes):
         col_idx = idx + 3
-        # 🔥 NULL PROOF FIX applied here
         q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
         ws.cell(row=current_row, column=col_idx, value=q_insurer).font = Font(name=font_family, size=11, bold=True)
         ws.cell(row=current_row, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
@@ -343,8 +341,15 @@ def main():
 # MOTOR INSURANCE MODULE
 # ==========================================
 MOTOR_SYSTEM_PROMPT = """
-You are an expert insurance processing system analyzing an insurance schedule or quotation.
-Analyze the provided PDF document and extract technical specifications, premium details, and coverage options.
+You are an expert, elite-level motor insurance underwriter and auditor. Your task is to extract variables from the provided document (policy schedule, quote, or draft) with absolute analytical precision.
+
+*** CRITICAL RULES FOR ADD-ONS & ZERO-PREMIUMS (READ CAREFULLY) ***
+1. THE ZERO-PREMIUM RULE: Quote schedules often list all possible add-ons. If an add-on (e.g., "Tyre Protection", "Key Replacement", "Consumables") has a listed premium of "0", "0.00", "-", "Nil", "N/A", or is left blank/dash, you MUST classify it as "No".
+2. EXCEPTION TO THE ZERO-PREMIUM RULE: You may only classify a zero-premium add-on as "Yes" if there is explicit visual/textual proof of inclusion adjacent to the add-on name, such as:
+   - A clear checkmark (✓), or explicitly written words like "Included", "Inbuilt", "FOC" (Free of Cost), "Complimentary".
+   - The premium value is clearly integrated into another package bundle explicitly documented in the schedule.
+3. If an add-on is completely missing from the schedule or is listed with 0.00 premium and has no "Included" indicators, it is strictly "No". Do not assume coverage.
+4. CPA (Compulsory Personal Accident) WAIVER: If the CPA premium is 0, verify if an owner-driver waiver has been selected. If opted out, "PA Cover" is strictly "No".
 
 Extract and format the output as a clean JSON object matching this schema:
 {
@@ -381,14 +386,14 @@ Extract and format the output as a clean JSON object matching this schema:
 }
 
 Use standard normalizations for coverage keys:
-- Depreciation Reimbursement/ Nil Depreciation/ Zero Dep -> "Zero Depreciation"
-- Engine Protect/ Engine Secure/ Engine Safe -> "Engine Protection"
+- Depreciation Reimbursement / Nil Depreciation / Zero Dep -> "Zero Depreciation"
+- Engine Protect / Engine Secure / Engine Safe -> "Engine Protection"
 - Loss of Personal Belongings -> "Loss of Personal Belongings"
-- Passenger Assistance/ Emergency Assistance -> "Passenger Assistance"
+- Passenger Assistance / Emergency Assistance -> "Passenger Assistance"
 - Key Replacement / Key Loss -> "Key Replacement"
 - Consumable Expenses / Consumables -> "Consumables"
 - Road side Assistance / RSA / IL Smart Assist -> "Roadside Assistance"
-- Gap Value / Return to Invoice -> "Return to Invoice"
+- Gap Value / Return to Invoice / Gap Value 1 -> "Return to Invoice"
 - Tyre Secure / Tyre Protection -> "Tyre Protection"
 
 If any other unique add-on cover (e.g. "Liberty Assure", "Smart Saver", "Emergency Medical Expenses") is explicitly active, add it to the coverages dictionary under its clean name as "Yes".
@@ -443,12 +448,10 @@ def render_motor_vertical(api_keys):
         
         excel_bytes, dynamic_covers = build_capitup_motor_excel(b, qs)
         
-        # 🔥 NULL PROOF FIX applied here
         base_insurer = str(b.get('insurer_name') or 'TATA').upper()
         preview_cols = {f"EXISTING ({base_insurer})": []}
         
         for q in qs:
-            # 🔥 NULL PROOF FIX applied here
             q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
             preview_cols[q_insurer] = []
             
@@ -467,7 +470,6 @@ def render_motor_vertical(api_keys):
         ] + [b.get("coverages", {}).get(key, "No") for key in dynamic_covers])
         
         for q in qs:
-            # 🔥 NULL PROOF FIX applied here
             q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
             preview_cols[q_insurer].extend([
                 b.get("insured_name"), b.get("address"), b.get("renewal_date"), b.get("registration_number"),
@@ -495,8 +497,14 @@ def render_motor_vertical(api_keys):
 # HEALTH INSURANCE MODULE (GMC QCR)
 # ==========================================
 HEALTH_SYSTEM_PROMPT = """
-You are an expert health insurance audit system. Extract all GMC (Group Medical Cover) quote details 
-precisely and format the output as a clean JSON matching the following schema.
+You are an expert corporate health insurance underwriter and auditor. Analyze the GMC (Group Medical Cover) quotation precisely.
+
+*** CRITICAL RULES FOR GMC COVERAGE LIMITS ***
+1. THE CO-PAYMENT RULE: If co-payment is "Nil", "No", "Waived", or "0%", classify as "No Co-pay". If a percentage is listed (e.g., "10% on claims"), write "10% Co-pay".
+2. MATERNITY CLAUSE: Look for maternity benefits. If maternity is "Not Covered" or has a limit of "0", classify as "No" or "Not Covered".
+3. ROOM RENT LIMITS: Check if room rent limits are capped (e.g., "1% of Sum Insured") or uncapped ("Single Private AC Room" or "No Limit").
+
+Extract and format the output as a clean JSON matching the following schema.
 
 Extract and format the output as a clean JSON object:
 {
@@ -555,7 +563,6 @@ def render_health_vertical(api_keys):
         
         columns_map = {}
         for idx, rec in enumerate(h_records):
-            # 🔥 NULL PROOF FIX applied here
             insurer = str(rec.get("insurer_name") or f"Insurer {idx+1}").upper()
             columns_map[insurer] = [
                 rec.get("insured_name"),
