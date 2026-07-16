@@ -90,7 +90,7 @@ class APIKeyManager:
 # ==========================================
 def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
     # Standardized with active production model names to avoid 404 errors
-    model_waterfall = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-3.1-pro']
+    model_waterfall = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro']
     
     json_config = types.GenerateContentConfig(
         response_mime_type="application/json",
@@ -355,8 +355,9 @@ You are an expert, elite-level motor insurance underwriter and auditor. Your tas
 
 3. NO EXTRACTING FROM MARKETING TEXT / USPs: 
    - DO NOT extract coverage status from marketing boxes, promotional footers, or sales pitches.
-   - For example, if the page has a "Why Choose Us / Our USP" sidebar or footer that checkmarks features like "24x7 roadside assistance", but Roadside Assistance has a premium of 0.00 and is not itemized as active in the premium calculation table, you MUST classify it as "No". 
-   - Analyze ONLY the actual premium calculation tables and active package descriptions.
+   - For example, if the page has a "Why Choose Us / Our USP" sidebar or footer (like Liberty's "24x7 liberty complete assistance" USP box) that checkmarks features like "24x7 roadside assistance", but Roadside Assistance has a premium of 0.00 and is not itemized as active in the premium calculation table, you MUST classify it as "No". 
+   - However, for Liberty specifically, Roadside Assistance is considered active ("Yes") ONLY if the "24x7 liberty complete assistance" box is explicitly checked at the bottom of their page.
+   - For ICICI Lombard, "Roadside Assistance" is classified as "No" because "IL Smart Assist" is their carrier-specific add-on. Extract "IL Smart Assist" as a separate row ("Yes") and keep "Roadside Assistance" strictly as "No" to match the broker's preference.
 
 4. CPA (Compulsory Personal Accident) WAIVER: If the CPA premium is 0, verify if an owner-driver waiver has been selected. If opted out, "PA Cover" is strictly "No".
 
