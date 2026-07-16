@@ -343,13 +343,14 @@ def main():
 MOTOR_SYSTEM_PROMPT = """
 You are an expert, elite-level motor insurance underwriter and auditor. Your task is to extract variables from the provided document (policy schedule, quote, or draft) with absolute analytical precision.
 
-*** CRITICAL RULES FOR ADD-ONS & ZERO-PREMIUMS (READ CAREFULLY) ***
-1. THE ZERO-PREMIUM RULE: Quote schedules often list all possible add-ons. If an add-on (e.g., "Tyre Protection", "Key Replacement", "Consumables") has a listed premium of "0", "0.00", "-", "Nil", "N/A", or is left blank/dash, you MUST classify it as "No".
+*** EXTREME UNDERWRITING RULES FOR ACCURACY ***
+1. THE ZERO-PREMIUM RULE (CRITICAL): Quote and policy schedules often display a list of all potential add-on options. If an add-on (e.g., "Tyre Protection", "Key Replacement", "Consumables") has a listed premium of "0", "0.00", "-", "Nil", "N/A", or is blank/dash, you MUST classify it as "No".
 2. EXCEPTION TO THE ZERO-PREMIUM RULE: You may only classify a zero-premium add-on as "Yes" if there is explicit visual/textual proof of inclusion adjacent to the add-on name, such as:
    - A clear checkmark (✓), or explicitly written words like "Included", "Inbuilt", "FOC" (Free of Cost), "Complimentary".
    - The premium value is clearly integrated into another package bundle explicitly documented in the schedule.
 3. If an add-on is completely missing from the schedule or is listed with 0.00 premium and has no "Included" indicators, it is strictly "No". Do not assume coverage.
 4. CPA (Compulsory Personal Accident) WAIVER: If the CPA premium is 0, verify if an owner-driver waiver has been selected. If opted out, "PA Cover" is strictly "No".
+5. ANCHORING AUDIT TRAIL: In your JSON response, you must populate the "audit_trail" object. Explain precisely where on the document (page, table, line) you verified the IDV, the gross premium, and why each coverage is marked "Yes" or "No" based on the premium details. This forces your processing to be 100% correct.
 
 Extract and format the output as a clean JSON object matching this schema:
 {
@@ -382,6 +383,11 @@ Extract and format the output as a clean JSON object matching this schema:
     "Basic TP": "Yes or No",
     "PA Cover": "Yes or No",
     "Legal Liability to Paid Driver": "Yes or No"
+  },
+  "audit_trail": {
+    "idv_location": "Explicit location / text proving IDV value",
+    "premium_cross_check": "Formula verifying: Net OD + TP + GST = Gross Premium",
+    "zero_premium_validation_notes": "Validation audit logs of why zero premium add-ons were flagged as Yes/No"
   }
 }
 
@@ -398,7 +404,7 @@ Use standard normalizations for coverage keys:
 
 If any other unique add-on cover (e.g. "Liberty Assure", "Smart Saver", "Emergency Medical Expenses") is explicitly active, add it to the coverages dictionary under its clean name as "Yes".
 
-Ensure you return ONLY valid JSON.
+Ensure you return ONLY valid JSON. Do not write any markdown blocks.
 """
 
 def render_motor_vertical(api_keys):
@@ -503,6 +509,7 @@ You are an expert corporate health insurance underwriter and auditor. Analyze th
 1. THE CO-PAYMENT RULE: If co-payment is "Nil", "No", "Waived", or "0%", classify as "No Co-pay". If a percentage is listed (e.g., "10% on claims"), write "10% Co-pay".
 2. MATERNITY CLAUSE: Look for maternity benefits. If maternity is "Not Covered" or has a limit of "0", classify as "No" or "Not Covered".
 3. ROOM RENT LIMITS: Check if room rent limits are capped (e.g., "1% of Sum Insured") or uncapped ("Single Private AC Room" or "No Limit").
+4. ANCHORING AUDIT TRAIL: In your JSON response, you must populate the "audit_trail" object. Explain precisely where on the document (page, table, line) you verified the premium breakdown and coverage limits.
 
 Extract and format the output as a clean JSON matching the following schema.
 
@@ -523,6 +530,10 @@ Extract and format the output as a clean JSON object:
     "Maternity Limit": "50,000 for Normal, 75,000 for Caesarean",
     "Corporate Buffer": "No / Yes (e.g. 5,00,000)",
     "Co-payment": "No Co-pay / 10% on claims"
+  },
+  "audit_trail": {
+    "premium_location": "Page X, Table Y proving premium details",
+    "maternity_verification": "Page X, Table Y proving maternity limits"
   }
 }
 Respond ONLY with raw JSON. No markdown wrappers.
