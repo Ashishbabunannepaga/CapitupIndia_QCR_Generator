@@ -90,7 +90,7 @@ class APIKeyManager:
 # ==========================================
 def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
     # Standardized with active production model names to avoid 404 errors
-    model_waterfall = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-3.1-pro']
+    model_waterfall = ['gemini-3.5-flash', 'gemini-3.1-pro-preview','gemini-3-pro-preview','gemini-2.5-flash', 'gemini-2.5-flash-lite']
     
     json_config = types.GenerateContentConfig(
         response_mime_type="application/json",
@@ -223,10 +223,20 @@ def build_capitup_motor_excel(baseline, quotes):
     ws.cell(row=current_row, column=2).alignment = Alignment(horizontal="center", vertical="center")
     ws.cell(row=current_row, column=2).border = cell_border
     
+    # Store dynamic quote names to ensure unique Excel column headers
+    excel_cols_written = {existing_insurer: True}
     for idx, q in enumerate(quotes):
         col_idx = idx + 3
         q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
-        ws.cell(row=current_row, column=col_idx, value=q_insurer).font = Font(name=font_family, size=11, bold=True)
+        
+        col_name = q_insurer
+        counter = 1
+        while col_name in excel_cols_written:
+            col_name = f"{q_insurer} ({counter})"
+            counter += 1
+            
+        excel_cols_written[col_name] = True
+        ws.cell(row=current_row, column=col_idx, value=col_name).font = Font(name=font_family, size=11, bold=True)
         ws.cell(row=current_row, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row=current_row, column=col_idx).border = cell_border
     ws.row_dimensions[current_row].height = 22
@@ -318,6 +328,76 @@ def build_capitup_motor_excel(baseline, quotes):
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue(), final_coverage_rows
+
+
+# ==========================================
+# UNDERWRITER MATHEMATICAL AUDIT ENGINE
+# ==========================================
+class CommercialReconciliationEngine:
+    def __init__(self, data_record):
+        self.data = data_record
+        self.insurer = str(data_record.get("insurer_name") or "UNKNOWN").upper()
+        self.gross_premium = float(str(data_record.get("gross_premium") or 0).replace(",", ""))
+        self.od_premium = float(str(data_record.get("od_premium") or 0).replace(",", ""))
+        self.tp_premium = float(str(data_record.get("tp_premium") or 0).replace(",", ""))
+        self.gst = float(str(data_record.get("gst") or 0).replace(",", ""))
+        
+    def run_reconciliation_audit(self):
+        audit_results = {
+            "status": "PASSED",
+            "logs": [],
+            "reconciliation_delta": 0.0
+        }
+        
+        calculated_gross = self.od_premium + self.tp_premium + self.gst
+        reconciliation_delta = abs(self.gross_premium - calculated_gross)
+        
+        audit_results["logs"].append(
+            f"ℹ️ **Document Values**: Net OD Premium = ₹{self.od_premium:,.2f} | "
+            f"TP Premium = ₹{self.tp_premium:,.2f} | GST = ₹{self.gst:,.2f}"
+        )
+        audit_results["logs"].append(
+            f"ℹ️ **Total Sum**: Calculated sum is ₹{calculated_gross:,.2f} vs. "
+            f"Document printed Gross: ₹{self.gross_premium:,.2f}"
+        )
+        
+        if reconciliation_delta <= 2.0:
+            audit_results["logs"].append(
+                f"✅ **Premium Reconciliation Passed**: Formula matches Gross exactly. "
+                f"Variance: ₹{reconciliation_delta:.2f}"
+            )
+        else:
+            audit_results["status"] = "WARNING"
+            audit_results["reconciliation_delta"] = reconciliation_delta
+            audit_results["logs"].append(
+                f"⚠️ **Premium Deviation Notice**: Sum of extracted components equals calculated ₹{calculated_gross:,.2f}, "
+                f"while the document lists Gross as ₹{self.gross_premium:,.2f}. "
+                f"Deviation: **₹{reconciliation_delta:,.2f}** (This can occur due to rounding or bundled parameters)."
+            )
+            
+        return audit_results
+
+def render_underwriter_audit_panel(baseline_record, quotes_records):
+    st.markdown("---")
+    st.subheader("🛡️ Underwriter Audit & Mathematical Reconciliation Logs")
+    st.info("Reconciliation checks run automatically in the background to analyze the extracted values.")
+    
+    # Baseline audit
+    base_engine = CommercialReconciliationEngine(baseline_record)
+    base_audit = base_engine.run_reconciliation_audit()
+    
+    with st.expander(f"🔍 Commercial Audit Log: EXISTING ({base_engine.insurer})", expanded=False):
+        for log in base_audit["logs"]:
+            st.markdown(log)
+            
+    # Quotes audit
+    for q in quotes_records:
+        q_engine = CommercialReconciliationEngine(q)
+        q_audit = q_engine.run_reconciliation_audit()
+        
+        with st.expander(f"🔍 Commercial Audit Log: {q_engine.insurer}", expanded=False):
+            for log in q_audit["logs"]:
+                st.markdown(log)
 
 
 # ==========================================
@@ -458,7 +538,7 @@ def render_motor_vertical(api_keys):
             except Exception as e:
                 st.error(f"Processing halted: {e}")
 
-    # Render Preview and Excel Generation
+    # Render Preview, Excel Generation, and Reconciliation logs
     if "motor_baseline" in st.session_state and "motor_quotes" in st.session_state:
         b = st.session_state.motor_baseline
         qs = st.session_state.motor_quotes
@@ -466,11 +546,35 @@ def render_motor_vertical(api_keys):
         excel_bytes, dynamic_covers = build_capitup_motor_excel(b, qs)
         
         base_insurer = str(b.get('insurer_name') or 'TATA').upper()
-        preview_cols = {f"EXISTING ({base_insurer})": []}
         
+        # Build UI Dataframe Preview Map with DEDUPLICATION
+        preview_cols = {}
+        
+        # 1. Populate baseline
+        base_key = f"EXISTING ({base_insurer})"
+        preview_cols[base_key] = [
+            b.get("insured_name"), b.get("address"), b.get("renewal_date"), b.get("registration_number"),
+            b.get("make"), b.get("model"), b.get("seating_capacity"), b.get("cubic_capacity"), b.get("year_of_manufacture"),
+            "---", b.get("idv"), b.get("ncb_percent"), b.get("tp_premium"), b.get("od_premium"), b.get("gst"), b.get("gross_premium"),
+            "---"
+        ] + [b.get("coverages", {}).get(key, "No") for key in dynamic_covers]
+        
+        # 2. Populate Quotes dynamically with dynamic key deduplication to prevent PyArrow crashes on multiple matching insurers
         for q in qs:
             q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
-            preview_cols[q_insurer] = []
+            
+            col_name = q_insurer
+            counter = 1
+            while col_name in preview_cols:
+                col_name = f"{q_insurer} ({counter})"
+                counter += 1
+                
+            preview_cols[col_name] = [
+                b.get("insured_name"), b.get("address"), b.get("renewal_date"), b.get("registration_number"),
+                b.get("make"), b.get("model"), b.get("seating_capacity"), b.get("cubic_capacity"), b.get("year_of_manufacture"),
+                "---", q.get("idv"), q.get("ncb_percent"), q.get("tp_premium"), q.get("od_premium"), q.get("gst"), q.get("gross_premium"),
+                "---"
+            ] + [q.get("coverages", {}).get(key, "No") for key in dynamic_covers]
             
         row_labels = [
             "Name of the Insured", "Address", "Renewal date", "Registration Number", 
@@ -479,22 +583,6 @@ def render_motor_vertical(api_keys):
             "--- COVERAGES ---"
         ] + dynamic_covers
         
-        preview_cols[list(preview_cols.keys())[0]].extend([
-            b.get("insured_name"), b.get("address"), b.get("renewal_date"), b.get("registration_number"),
-            b.get("make"), b.get("model"), b.get("seating_capacity"), b.get("cubic_capacity"), b.get("year_of_manufacture"),
-            "---", b.get("idv"), b.get("ncb_percent"), b.get("tp_premium"), b.get("od_premium"), b.get("gst"), b.get("gross_premium"),
-            "---"
-        ] + [b.get("coverages", {}).get(key, "No") for key in dynamic_covers])
-        
-        for q in qs:
-            q_insurer = str(q.get("insurer_name") or "UNKNOWN").upper()
-            preview_cols[q_insurer].extend([
-                b.get("insured_name"), b.get("address"), b.get("renewal_date"), b.get("registration_number"),
-                b.get("make"), b.get("model"), b.get("seating_capacity"), b.get("cubic_capacity"), b.get("year_of_manufacture"),
-                "---", q.get("idv"), q.get("ncb_percent"), q.get("tp_premium"), q.get("od_premium"), q.get("gst"), q.get("gross_premium"),
-                "---"
-            ] + [q.get("coverages", {}).get(key, "No") for key in dynamic_covers])
-            
         df_preview = pd.DataFrame(preview_cols, index=row_labels).astype(str)
         
         st.markdown("---")
@@ -508,6 +596,9 @@ def render_motor_vertical(api_keys):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch"
         )
+        
+        # Display the informational logs at the very bottom
+        render_underwriter_audit_panel(b, qs)
 
 
 # ==========================================
