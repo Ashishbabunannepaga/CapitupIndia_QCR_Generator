@@ -90,7 +90,7 @@ class APIKeyManager:
 # ==========================================
 def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
     # Standardized with active production model names to avoid 404 errors
-    model_waterfall = ['gemini-3.5-flash', 'gemini-3.1-pro-preview','gemini-3-pro-preview','gemini-2.5-flash', 'gemini-2.5-flash-lite']
+    model_waterfall = ['gemini-3.6-flash','gemini-3.5-flash', 'gemini-3.1-pro-preview','gemini-3-pro-preview','gemini-2.5-flash', 'gemini-2.5-flash-lite']
     
     json_config = types.GenerateContentConfig(
         response_mime_type="application/json",
