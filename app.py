@@ -90,8 +90,16 @@ class APIKeyManager:
 # CORE AI PROCESSING & MODEL WATERFALL
 # ==========================================
 def process_pdf_document(file_bytes, file_name, prompt, key_manager, retries=6):
-    # Standardized with active production model names to avoid 404 errors on startup
-      model_waterfall = ['gemini-3.6-flash','gemini-3.5-flash-lite','gemini-3.5-flash', 'gemini-3.1-pro-preview','gemini-3-pro-preview','gemini-2.5-flash', 'gemini-2.5-flash-lite']
+    # Dynamically updated waterfall sequence with gemini-3.6-flash as default
+    model_waterfall = [
+        'gemini-3.6-flash', 
+        'gemini-3.5-flash-lite', 
+        'gemini-3.5-flash', 
+        'gemini-3.1-pro-preview', 
+        'gemini-3-pro-preview', 
+        'gemini-2.5-flash', 
+        'gemini-2.5-flash-lite'
+    ]
     
     json_config = types.GenerateContentConfig(
         response_mime_type="application/json",
@@ -418,6 +426,8 @@ def main():
     if domain == "🚗 Motor QCR Generator":
         render_motor_vertical(global_api_keys)
     elif domain == "🏥 Health Insurance (GMC)":
+        # Safe Lazy Import to completely prevent circular dependency crashes on start
+        from health_module import render_health_vertical
         render_health_vertical(global_api_keys)
 
 
@@ -603,134 +613,6 @@ def render_motor_vertical(api_keys):
         
         # Display the informational logs at the very bottom
         render_underwriter_audit_panel(b, qs)
-
-
-# ==========================================
-# HEALTH INSURANCE MODULE (GMC QCR)
-# ==========================================
-HEALTH_SYSTEM_PROMPT = """
-You are an expert corporate health insurance underwriter and auditor. Analyze the GMC (Group Medical Cover) quotation precisely.
-
-*** CRITICAL RULES FOR GMC COVERAGE LIMITS ***
-1. THE CO-PAYMENT RULE: If co-payment is "Nil", "No", "Waived", or "0%", classify as "No Co-pay". If a percentage is listed (e.g., "10% on claims"), write "10% Co-pay".
-2. MATERNITY CLAUSE: Look for maternity benefits. If maternity is "Not Covered" or has a limit of "0", classify as "No" or "Not Covered".
-3. ROOM RENT LIMITS: Check if room rent limits are capped (e.g., "1% of Sum Insured") or uncapped ("Single Private AC Room" or "No Limit").
-4. ANCHORING AUDIT TRAIL: In your JSON response, you must populate the "audit_trail" object. Explain precisely where on the document (page, table, line) you verified the premium breakdown and coverage limits.
-
-Extract and format the output as a clean JSON matching the following schema.
-
-Extract and format the output as a clean JSON object:
-{
-  "insurer_name": "Name of insurer, e.g., Star Health, Care Health, Niva Bupa",
-  "insured_name": "Name of Corporate Insured / Group",
-  "policy_type": "Group Medical Cover (GMC)",
-  "total_lives": 250,
-  "sum_insured": "Family Floater of 3,00,000",
-  "gross_premium": 150000.0,
-  "gst": 27000.0,
-  "total_premium": 177000.0,
-  "coverages": {
-    "Room Rent Limits": "1% of Sum Insured or Single Private AC Room",
-    "ICU Limit": "2% of Sum Insured or No Limit",
-    "Pre-Existing Disease waiting period": "Covered from Day 1 / Waiver",
-    "Maternity Limit": "50,000 for Normal, 75,000 for Caesarean",
-    "Corporate Buffer": "No / Yes (e.g. 5,00,000)",
-    "Co-payment": "No Co-pay / 10% on claims"
-  },
-  "audit_trail": {
-    "premium_location": "Page X, Table Y proving premium details",
-    "maternity_verification": "Page X, Table Y proving maternity limits"
-  }
-}
-Respond ONLY with raw JSON. No markdown wrappers.
-"""
-
-def render_health_vertical(api_keys):
-    st.subheader("🏥 Health Insurance (GMC) Analyzer")
-    st.markdown("Upload Health GMC Quotes. The layout parser will extract benefits, waiting periods, and room rent structures side-by-side.")
-    
-    uploaded_quotes = st.file_uploader("Upload GMC Quotes (PDF)", type=["pdf"], accept_multiple_files=True)
-    
-    if uploaded_quotes:
-        if not api_keys:
-            st.error("Please configure API keys in the sidebar or `.streamlit/secrets.toml`.")
-            return
-            
-        if st.button("Generate Health GMC QCR Matrix", type="primary", width="stretch"):
-            health_records = []
-            
-            try:
-                key_manager = APIKeyManager(api_keys)
-                
-                for q_file in uploaded_quotes:
-                    with st.spinner(f"Extracting GMC details from {q_file.name}..."):
-                        q_bytes = q_file.read()
-                        record = process_pdf_document(q_bytes, q_file.name, HEALTH_SYSTEM_PROMPT, key_manager)
-                        health_records.append(record)
-                
-                if health_records:
-                    st.session_state.health_records = health_records
-                    st.success("Health GMC analysis complete.")
-            
-            except Exception as e:
-                st.error(f"Processing halted: {e}")
-
-    if "health_records" in st.session_state and st.session_state.health_records:
-        h_records = st.session_state.health_records
-        
-        columns_map = {}
-        for idx, rec in enumerate(h_records):
-            insurer = str(rec.get("insurer_name") or f"Insurer {idx+1}").upper()
-            columns_map[insurer] = [
-                rec.get("insured_name"),
-                rec.get("policy_type"),
-                rec.get("total_lives"),
-                rec.get("sum_insured"),
-                rec.get("gross_premium"),
-                rec.get("gst"),
-                rec.get("total_premium"),
-                rec.get("coverages", {}).get("Room Rent Limits", "No"),
-                rec.get("coverages", {}).get("ICU Limit", "No"),
-                rec.get("coverages", {}).get("Pre-Existing Disease waiting period", "No"),
-                rec.get("coverages", {}).get("Maternity Limit", "No"),
-                rec.get("coverages", {}).get("Corporate Buffer", "No"),
-                rec.get("coverages", {}).get("Co-payment", "No")
-            ]
-            
-        index_labels = [
-            "Corporate / Insured Group", "Policy Type", "Total Covered Lives", "Sum Insured Structure",
-            "Gross Premium (Basic)", "GST @ 18%", "Total Premium Payable",
-            "Room Rent Limits", "ICU Limits", "Pre-Existing Disease Waiver", "Maternity Limits",
-            "Corporate Buffer", "Co-payment Clauses"
-        ]
-        
-        df_health_preview = pd.DataFrame(columns_map, index=index_labels).astype(str)
-        
-        st.write("---")
-        st.subheader("📋 Health GMC QCR Matrix Preview")
-        st.dataframe(df_health_preview, width="stretch")
-        
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Health GMC Comparison"
-        
-        ws.cell(row=1, column=1, value="Health GMC Comparison").font = Font(name="Calibri", size=14, bold=True)
-        for r_idx, label in enumerate(index_labels, start=3):
-            ws.cell(row=r_idx, column=1, value=label).font = Font(name="Calibri", bold=True)
-            for c_idx, insurer in enumerate(columns_map.keys(), start=2):
-                ws.cell(row=2, column=c_idx, value=insurer).font = Font(name="Calibri", bold=True)
-                ws.cell(row=r_idx, column=c_idx, value=columns_map[insurer][r_idx-3])
-                
-        output_health = io.BytesIO()
-        wb.save(output_health)
-        
-        st.download_button(
-            label="📥 Download Health GMC QCR Matrix (Excel)",
-            data=output_health.getvalue(),
-            file_name="GMC_Comparison_Report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch"
-        )
 
 if __name__ == "__main__":
     main()
