@@ -5,44 +5,75 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Dynamic Imports from app.py to avoid circular dependencies
-from app import process_pdf_document, APIKeyManager, render_underwriter_audit_panel
+# Safe imports from utilities to prevent circular dependencies
+from utils import process_pdf_document, APIKeyManager, render_underwriter_audit_panel
 
 HEALTH_SYSTEM_PROMPT = """
-You are an expert corporate health insurance underwriter and auditor. Analyze the GMC (Group Medical Cover) quotation precisely.
+You are an expert, elite-level health insurance underwriter and auditor. Your task is to extract variables from the provided document (GMC quotation, policy schedule, or retail family floater) with absolute analytical precision.
 
-*** CRITICAL RULES FOR GMC COVERAGE LIMITS ***
-1. THE CO-PAYMENT RULE: If co-payment is "Nil", "No", "Waived", or "0%", classify as "No Co-pay". If a percentage is listed (e.g., "10% on claims"), write "10% Co-pay".
-2. MATERNITY CLAUSE: Look for maternity benefits. If maternity is "Not Covered" or has a limit of "0", classify as "No" or "Not Covered".
-3. ROOM RENT LIMITS: Check if room rent limits are capped (e.g., "1% of Sum Insured") or uncapped ("Single Private AC Room" or "No Limit").
-4. ANCHORING AUDIT TRAIL: In your JSON response, you must populate the "audit_trail" object. Explain precisely where on the document (page, table, line) you verified the premium breakdown and coverage limits.
+*** STRICT UNDERWRITING RULES FOR ACCURACY ***
 
-Extract and format the output as a clean JSON matching the following schema.
+1. THE 18% GST BACK-CALCULATION RULE (CRITICAL): 
+   - Health insurance premiums in India are subject to exactly 18% GST.
+   - If the document only displays a single prominent "Total Premium Payable" (inclusive of tax) and does not explicitly itemize GST, or if your extracted GST is mathematically impossible (e.g. 0.24 or 0 on a premium in the thousands), you MUST perform a standard back-calculation:
+     Net Premium (Basic) = Total Premium / 1.18
+     GST (18%) = Total Premium - Net Premium (Basic)
+   - Never output GST as 0.00 or a fraction if the total premium is in the thousands. Cross-verify your numbers: Net Premium + GST must equal Total Premium exactly.
 
-Extract and format the output as a clean JSON object:
+2. THE ZERO-VALUE RULE: If any limit, sublimit, or benefit (e.g. Maternity C-Section, Corporate Buffer, Cataract Sublimit) is listed as "0", "0.00", "Nil", "N/A", "Not Covered", or is left blank/dash, you MUST classify it as "No" or "Not Covered".
+
+3. GMC VS RETAIL FLOATER: Detect if the policy is a "Group Medical Cover (GMC)" or a retail "Family Floater / Individual" plan. 
+   - For retail/floater plans, extract the proposer's name as the "insured_name" (e.g. Vemuri Murali Krishna).
+
+4. ANCHORING AUDIT TRAIL: In your JSON response, you must populate the "audit_trail" object. Explain precisely the page, table, and formulas you used to cross-verify that: Net Premium + GST = Total Premium Payable.
+
+Extract and format the output as a clean JSON object matching this exact schema:
 {
-  "insurer_name": "Name of insurer, e.g., Star Health, Care Health, Niva Bupa",
-  "insured_name": "Name of Corporate Insured / Group",
-  "policy_type": "Group Medical Cover (GMC)",
-  "total_lives": 250,
-  "sum_insured": "Family Floater of 3,00,000",
-  "gross_premium": 150000.0,
-  "gst": 27000.0,
-  "total_premium": 177000.0,
+  "insurer_name": "Name of insurer, e.g. STAR HEALTH, CARE HEALTH, NIVA BUPA, ICICI LOMBARD, TATA AIG",
+  "insured_name": "Name of Corporate Insured / Proposer Name",
+  "policy_type": "Group Medical Cover (GMC) or Family Floater or Individual",
+  "employee_count": "Total covered lives or employee count, e.g. 4 Lives or 250 Lives",
+  "family_definition": "Family definition, e.g. 1+3 (Self + Spouse + 2 Children) or Floater",
+  "relations_covered": "Eligible relations, e.g. Self, Spouse, Children, Parents",
+  "min_age_limit": "Minimum entry age, e.g. 91 Days or 18 Years",
+  "max_age_limit": "Maximum entry age, e.g. 65 Years or No Limit",
+  "sum_insured": "Sum Insured structure, e.g. Family Floater of 10,00,000",
+  "gross_premium": 40100.0,
+  "gst": 7218.0,
+  "total_premium": 47318.0,
   "coverages": {
-    "Room Rent Limits": "1% of Sum Insured or Single Private AC Room",
-    "ICU Limit": "2% of Sum Insured or No Limit",
-    "Pre-Existing Disease waiting period": "Covered from Day 1 / Waiver",
-    "Maternity Limit": "50,000 for Normal, 75,000 for Caesarean",
-    "Corporate Buffer": "No / Yes (e.g. 5,00,000)",
-    "Co-payment": "No Co-pay / 10% on claims"
+    "Room Rent Limits": "e.g. 1% of Sum Insured or Single Private AC Room",
+    "ICU Limit": "e.g. 2% of Sum Insured or No Limit",
+    "Pre-Existing Disease waiting period": "e.g. Covered from Day 1 / Day 1 Waiver",
+    "Maternity Limit (Normal)": "e.g. 50,000 or Not Covered",
+    "Maternity Limit (C-Section)": "e.g. 75,000 or Not Covered",
+    "Maternity Waiting Period": "e.g. Day 1 Covered or 9 Months",
+    "Pre & Post Natal Expenses": "e.g. Covered within Maternity Limit or up to 5,000",
+    "New Born Baby Cover": "e.g. Covered from Day 1 within Sum Insured or up to 10% of SI",
+    "Road Ambulance Limit": "e.g. up to 2,000 per hospitalization or Actuals",
+    "Pre & Post Hospitalization Period": "e.g. 30 Days Pre & 60 Days Post",
+    "AYUSH Treatment": "e.g. Covered up to Sum Insured or No",
+    "Disease Sublimits": "e.g. No Sublimits or List of disease-specific capping",
+    "Cataract Sublimit": "e.g. 30,000 per eye or No Limit",
+    "Internal Congenital Disease": "e.g. Covered up to Sum Insured or No",
+    "External Congenital Anomaly": "e.g. Covered up to 1,00,000 or No",
+    "FESS (Sinus Surgery)": "e.g. Covered up to SI or Sublimit of 50,000",
+    "Psychiatric & Mental Illness": "e.g. Covered up to Sum Insured or No",
+    "Modern Treatments": "e.g. Covered up to SI or capped at 50% of SI",
+    "Lasik Cover": "e.g. Covered if > 7.5 dioptres or No",
+    "Day Care Treatment": "e.g. All Day Care procedures covered or No",
+    "Domiciliary Hospitalization": "e.g. Covered up to Sum Insured or No",
+    "Organ Donor Expenses": "e.g. Covered up to SI or No",
+    "Well Mother Cover": "e.g. Covered up to 2,00,0 or No",
+    "Co-payment": "e.g. No Co-pay or 10% Co-pay on parents",
+    "Special Conditions": "e.g. Mid-term inclusion allowed for newborns and newly wed spouses"
   },
   "audit_trail": {
     "premium_location": "Page X, Table Y proving premium details",
-    "maternity_verification": "Page X, Table Y proving maternity limits"
+    "maternity_verification": "Page X, Table Y proving maternity limits and waiting periods"
   }
 }
-Respond ONLY with raw JSON. No markdown wrappers.
+Respond ONLY with raw JSON. Do not include markdown blocks.
 """
 
 def build_capitup_health_excel(baseline, quotes):
@@ -89,7 +120,11 @@ def build_capitup_health_excel(baseline, quotes):
     metadata = [
         ("Corporate / Insured Group", baseline.get("insured_name", "N/A")),
         ("Policy Type", baseline.get("policy_type", "Group Medical Cover (GMC)")),
-        ("Total Covered Lives (Baseline)", baseline.get("total_lives", "N/A")),
+        ("Total Covered Lives (Baseline)", baseline.get("employee_count", "N/A")),
+        ("Family Definition (Baseline)", baseline.get("family_definition", "N/A")),
+        ("Relations Covered (Baseline)", baseline.get("relations_covered", "N/A")),
+        ("Min Entry Age limit", baseline.get("min_age_limit", "N/A")),
+        ("Max Entry Age limit", baseline.get("max_age_limit", "N/A")),
         ("Sum Insured Structure (Baseline)", baseline.get("sum_insured", "N/A")),
     ]
     
@@ -184,9 +219,28 @@ def build_capitup_health_excel(baseline, quotes):
         ("Room Rent Limits", "Room Rent Limits"),
         ("ICU Limit", "ICU Limit"),
         ("Pre-Existing Disease waiting period", "Pre-Existing Disease waiting period"),
-        ("Maternity Limit", "Maternity Limit"),
-        ("Corporate Buffer", "Corporate Buffer"),
+        ("Maternity Limit (Normal)", "Maternity Limit (Normal)"),
+        ("Maternity Limit (C-Section)", "Maternity Limit (C-Section)"),
+        ("Maternity Waiting Period", "Maternity Waiting Period"),
+        ("Pre & Post Natal Expenses", "Pre & Post Natal Expenses"),
+        ("New Born Baby Cover", "New Born Baby Cover"),
+        ("Road Ambulance Limit", "Road Ambulance Limit"),
+        ("Pre & Post Hospitalization Period", "Pre & Post Hospitalization Period"),
+        ("AYUSH Treatment", "AYUSH Treatment"),
+        ("Disease Sublimits", "Disease Sublimits"),
+        ("Cataract Sublimit", "Cataract Sublimit"),
+        ("Internal Congenital Disease", "Internal Congenital Disease"),
+        ("External Congenital Anomaly", "External Congenital Anomaly"),
+        ("FESS (Sinus Surgery)", "FESS (Sinus Surgery)"),
+        ("Psychiatric & Mental Illness", "Psychiatric & Mental Illness"),
+        ("Modern Treatments", "Modern Treatments"),
+        ("Lasik Cover", "Lasik Cover"),
+        ("Day Care Treatment", "Day Care Treatment"),
+        ("Domiciliary Hospitalization", "Domiciliary Hospitalization"),
+        ("Organ Donor Expenses", "Organ Donor Expenses"),
+        ("Well Mother Cover", "Well Mother Cover"),
         ("Co-payment", "Co-payment"),
+        ("Special Conditions", "Special Conditions")
     ]
     
     for label, json_key in clauses_list:
@@ -210,7 +264,7 @@ def build_capitup_health_excel(baseline, quotes):
         ws.row_dimensions[current_row].height = 20
         current_row += 1
 
-    ws.column_dimensions['A'].width = 35
+    ws.column_dimensions['A'].width = 38
     for col in range(2, num_columns + 1):
         ws.column_dimensions[get_column_letter(col)].width = 25
         
@@ -272,18 +326,40 @@ def render_health_vertical(api_keys):
         base_key = f"EXISTING ({base_insurer})"
         columns_map[base_key] = [
             hb.get("insured_name"),
-            hb.get("policy_type"),
-            hb.get("total_lives"),
+            hb.get("policy_type", "Group Medical Cover (GMC)"),
+            hb.get("employee_count"),
+            hb.get("family_definition"),
+            hb.get("relations_covered"),
+            f"Min: {hb.get('min_age_limit', 'N/A')} | Max: {hb.get('max_age_limit', 'N/A')}",
             hb.get("sum_insured"),
             hb.get("gross_premium"),
             hb.get("gst"),
             hb.get("total_premium"),
-            hb.get("coverages", {}).get("Room Rent Limits", "No"),
-            hb.get("coverages", {}).get("ICU Limit", "No"),
+            hb.get("coverages", {}).get("Room Rent Limits", "No Capping"),
+            hb.get("coverages", {}).get("ICU Limit", "No Capping"),
             hb.get("coverages", {}).get("Pre-Existing Disease waiting period", "No"),
-            hb.get("coverages", {}).get("Maternity Limit", "No"),
-            hb.get("coverages", {}).get("Corporate Buffer", "No"),
-            hb.get("coverages", {}).get("Co-payment", "No")
+            hb.get("coverages", {}).get("Maternity Limit (Normal)", "No"),
+            hb.get("coverages", {}).get("Maternity Limit (C-Section)", "No"),
+            hb.get("coverages", {}).get("Maternity Waiting Period", "No"),
+            hb.get("coverages", {}).get("Pre & Post Natal Expenses", "No"),
+            hb.get("coverages", {}).get("New Born Baby Cover", "No"),
+            hb.get("coverages", {}).get("Road Ambulance Limit", "No"),
+            hb.get("coverages", {}).get("Pre & Post Hospitalization Period", "No"),
+            hb.get("coverages", {}).get("AYUSH Treatment", "No"),
+            hb.get("coverages", {}).get("Disease Sublimits", "No"),
+            hb.get("coverages", {}).get("Cataract Sublimit", "No"),
+            hb.get("coverages", {}).get("Internal Congenital Disease", "No"),
+            hb.get("coverages", {}).get("External Congenital Anomaly", "No"),
+            hb.get("coverages", {}).get("FESS (Sinus Surgery)", "No"),
+            hb.get("coverages", {}).get("Psychiatric & Mental Illness", "No"),
+            hb.get("coverages", {}).get("Modern Treatments", "No"),
+            hb.get("coverages", {}).get("Lasik Cover", "No"),
+            hb.get("coverages", {}).get("Day Care Treatment", "No"),
+            hb.get("coverages", {}).get("Domiciliary Hospitalization", "No"),
+            hb.get("coverages", {}).get("Organ Donor Expenses", "No"),
+            hb.get("coverages", {}).get("Well Mother Cover", "No"),
+            hb.get("coverages", {}).get("Co-payment", "No"),
+            hb.get("coverages", {}).get("Special Conditions", "No")
         ]
         
         # 2. Populate Quotes dynamically
@@ -298,25 +374,50 @@ def render_health_vertical(api_keys):
                 
             columns_map[col_name] = [
                 rec.get("insured_name"),
-                rec.get("policy_type"),
-                rec.get("total_lives"),
+                rec.get("policy_type", "Group Medical Cover (GMC)"),
+                rec.get("employee_count"),
+                rec.get("family_definition"),
+                rec.get("relations_covered"),
+                f"Min: {rec.get('min_age_limit', 'N/A')} | Max: {rec.get('max_age_limit', 'N/A')}",
                 rec.get("sum_insured"),
                 rec.get("gross_premium"),
                 rec.get("gst"),
                 rec.get("total_premium"),
-                rec.get("coverages", {}).get("Room Rent Limits", "No"),
-                rec.get("coverages", {}).get("ICU Limit", "No"),
+                rec.get("coverages", {}).get("Room Rent Limits", "No Capping"),
+                rec.get("coverages", {}).get("ICU Limit", "No Capping"),
                 rec.get("coverages", {}).get("Pre-Existing Disease waiting period", "No"),
-                rec.get("coverages", {}).get("Maternity Limit", "No"),
-                rec.get("coverages", {}).get("Corporate Buffer", "No"),
-                rec.get("coverages", {}).get("Co-payment", "No")
+                rec.get("coverages", {}).get("Maternity Limit (Normal)", "No"),
+                rec.get("coverages", {}).get("Maternity Limit (C-Section)", "No"),
+                rec.get("coverages", {}).get("Maternity Waiting Period", "No"),
+                rec.get("coverages", {}).get("Pre & Post Natal Expenses", "No"),
+                rec.get("coverages", {}).get("New Born Baby Cover", "No"),
+                rec.get("coverages", {}).get("Road Ambulance Limit", "No"),
+                rec.get("coverages", {}).get("Pre & Post Hospitalization Period", "No"),
+                rec.get("coverages", {}).get("AYUSH Treatment", "No"),
+                rec.get("coverages", {}).get("Disease Sublimits", "No"),
+                rec.get("coverages", {}).get("Cataract Sublimit", "No"),
+                rec.get("coverages", {}).get("Internal Congenital Disease", "No"),
+                rec.get("coverages", {}).get("External Congenital Anomaly", "No"),
+                rec.get("coverages", {}).get("FESS (Sinus Surgery)", "No"),
+                rec.get("coverages", {}).get("Psychiatric & Mental Illness", "No"),
+                rec.get("coverages", {}).get("Modern Treatments", "No"),
+                rec.get("coverages", {}).get("Lasik Cover", "No"),
+                rec.get("coverages", {}).get("Day Care Treatment", "No"),
+                rec.get("coverages", {}).get("Domiciliary Hospitalization", "No"),
+                rec.get("coverages", {}).get("Organ Donor Expenses", "No"),
+                rec.get("coverages", {}).get("Well Mother Cover", "No"),
+                rec.get("coverages", {}).get("Co-payment", "No"),
+                rec.get("coverages", {}).get("Special Conditions", "No")
             ]
             
         index_labels = [
-            "Corporate / Insured Group", "Policy Type", "Total Covered Lives", "Sum Insured Structure",
+            "Corporate / Insured Group", "Policy Type", "Total Covered Lives", "Family Definition", "Relations Covered", "Entry Age Limits", "Sum Insured Structure",
             "Gross Premium (Basic)", "GST @ 18%", "Total Premium Payable",
-            "Room Rent Limits", "ICU Limits", "Pre-Existing Disease Waiver", "Maternity Limits",
-            "Corporate Buffer", "Co-payment Clauses"
+            "Room Rent Limits", "ICU Limits", "Pre-Existing Disease Waiver", "Maternity Limits (Normal)", "Maternity Limits (C-Section)", "Maternity Waiting Period",
+            "Pre & Post Natal Expenses", "New Born Baby Cover", "Road Ambulance Limit", "Pre & Post Hospitalization Period", "AYUSH Treatment",
+            "Disease Sublimits", "Cataract Sublimit", "Internal Congenital Coverage", "External Congenital Coverage", "FESS (Sinus Surgery)",
+            "Psychiatric & Mental Illness", "Modern Treatment Cover", "Lasik Cover", "Day Care Treatment", "Domiciliary Hospitalization", "Organ Donor Expenses",
+            "Well Mother Cover", "Co-payment Clauses", "Special Conditions"
         ]
         
         df_health_preview = pd.DataFrame(columns_map, index=index_labels).astype(str)
